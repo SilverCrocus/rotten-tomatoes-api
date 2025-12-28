@@ -43,6 +43,26 @@ async def init_db() -> None:
             ON rt_cache(updated_at)
         """)
 
+        # API keys table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR(64) UNIQUE NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE,
+                rate_limit INTEGER,
+                requests_count INTEGER DEFAULT 0,
+                requests_reset_at TIMESTAMP DEFAULT NOW(),
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_api_keys_key
+            ON api_keys(key)
+        """)
+
 
 async def close_db() -> None:
     """Close the database connection pool."""

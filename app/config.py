@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     # Rate limiting
     rt_request_delay: float = 1.0  # seconds between RT requests
 
+    # Authentication
+    admin_api_key: str = ""  # Set via ADMIN_API_KEY env var
+    default_rate_limit: int = 500  # requests per hour for regular users
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

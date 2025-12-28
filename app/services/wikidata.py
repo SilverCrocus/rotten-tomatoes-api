@@ -35,7 +35,7 @@ async def get_rt_slug(imdb_id: str) -> Optional[str]:
                 params={"query": query, "format": "json"},
                 headers={
                     "Accept": "application/sparql-results+json",
-                    "User-Agent": "RT-API/1.0 (Personal movie data service)",
+                    "User-Agent": "RT-API/1.0 (https://github.com/; Personal movie data lookup)",
                 },
             )
             response.raise_for_status()

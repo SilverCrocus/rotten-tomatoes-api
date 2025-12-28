@@ -46,3 +46,37 @@ class ErrorResponse(BaseModel):
     """Error response model."""
 
     detail: str
+
+
+class APIKeyCreate(BaseModel):
+    """Request model for creating an API key."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Name/description for the key")
+    is_admin: bool = Field(False, alias="isAdmin", description="Whether this is an admin key")
+    rate_limit: Optional[int] = Field(None, alias="rateLimit", description="Custom rate limit (requests/hour)")
+
+    class Config:
+        populate_by_name = True
+
+
+class APIKeyResponse(BaseModel):
+    """Response model for API key."""
+
+    id: int
+    key: str = Field(..., description="The API key (only shown on creation)")
+    name: str
+    is_admin: bool = Field(..., alias="isAdmin")
+    rate_limit: Optional[int] = Field(None, alias="rateLimit")
+    requests_count: int = Field(..., alias="requestsCount")
+    is_active: bool = Field(..., alias="isActive")
+    created_at: datetime = Field(..., alias="createdAt")
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class APIKeyListResponse(BaseModel):
+    """Response model for listing API keys."""
+
+    keys: list[APIKeyResponse]

@@ -1,9 +1,18 @@
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import logging
 
-from app.models.schemas import RTMovieResponse, HealthResponse, ErrorResponse
-from app.services import wikidata, scraper, cache
+from app.models.schemas import (
+    RTMovieResponse,
+    HealthResponse,
+    ErrorResponse,
+    APIKeyCreate,
+    APIKeyResponse,
+    APIKeyListResponse,
+)
+from app.services import wikidata, scraper, cache, auth
+from app.api.dependencies import get_api_key, get_admin_api_key
+from app.services.auth import APIKey
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +33,13 @@ async def health_check():
     response_model=RTMovieResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid IMDB ID format"},
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
         404: {"model": ErrorResponse, "description": "Movie not found"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         502: {"model": ErrorResponse, "description": "Failed to fetch RT data"},
     },
 )
-async def get_movie(imdb_id: str):
+async def get_movie(imdb_id: str, api_key: APIKey = Depends(get_api_key)):
     """
     Get Rotten Tomatoes data for a movie by IMDB ID.
 
@@ -127,3 +138,108 @@ async def get_movie(imdb_id: str):
         consensus=cached.consensus,
         cachedAt=cached.cached_at,
     )
+
+
+# =============================================================================
+# Admin Endpoints (require admin API key)
+# =============================================================================
+
+
+@router.post(
+    "/admin/keys",
+    response_model=APIKeyResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Admin access required"},
+    },
+    tags=["Admin"],
+)
+async def create_api_key(
+    request: APIKeyCreate,
+    admin_key: APIKey = Depends(get_admin_api_key),
+):
+    """
+    Create a new API key. Requires admin access.
+
+    - **name**: A descriptive name for the key
+    - **isAdmin**: Whether this key has admin privileges (default: false)
+    - **rateLimit**: Custom rate limit in requests/hour (default: 500)
+    """
+    new_key = await auth.create_api_key(
+        name=request.name,
+        is_admin=request.is_admin,
+        rate_limit=request.rate_limit,
+    )
+
+    logger.info(f"Admin {admin_key.name} created API key: {new_key.name}")
+
+    return APIKeyResponse(
+        id=new_key.id,
+        key=new_key.key,  # Full key only shown on creation
+        name=new_key.name,
+        isAdmin=new_key.is_admin,
+        rateLimit=new_key.rate_limit,
+        requestsCount=new_key.requests_count,
+        isActive=new_key.is_active,
+        createdAt=new_key.created_at,
+    )
+
+
+@router.get(
+    "/admin/keys",
+    response_model=APIKeyListResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Admin access required"},
+    },
+    tags=["Admin"],
+)
+async def list_api_keys(admin_key: APIKey = Depends(get_admin_api_key)):
+    """
+    List all API keys. Requires admin access.
+    Keys are masked for security (only first 8 and last 4 characters shown).
+    """
+    keys = await auth.list_api_keys()
+
+    return APIKeyListResponse(
+        keys=[
+            APIKeyResponse(
+                id=k.id,
+                key=k.key,  # Already masked by list_api_keys
+                name=k.name,
+                isAdmin=k.is_admin,
+                rateLimit=k.rate_limit,
+                requestsCount=k.requests_count,
+                isActive=k.is_active,
+                createdAt=k.created_at,
+            )
+            for k in keys
+        ]
+    )
+
+
+@router.delete(
+    "/admin/keys/{key_id}",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        403: {"model": ErrorResponse, "description": "Admin access required"},
+        404: {"model": ErrorResponse, "description": "Key not found"},
+    },
+    tags=["Admin"],
+)
+async def revoke_api_key(
+    key_id: int,
+    admin_key: APIKey = Depends(get_admin_api_key),
+):
+    """
+    Revoke an API key by ID. Requires admin access.
+    The key will be deactivated but not deleted from the database.
+    """
+    success = await auth.revoke_api_key(key_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    logger.info(f"Admin {admin_key.name} revoked API key ID: {key_id}")
+
+    return {"message": f"API key {key_id} has been revoked"}

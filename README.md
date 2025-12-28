@@ -45,17 +45,21 @@ Health check endpoint.
 
 - Python 3.11+
 - PostgreSQL
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 ### Setup
 
-1. Create a virtual environment:
+1. Create a virtual environment and install dependencies with uv:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
 ```
 
-2. Install dependencies:
+Or with pip:
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -82,7 +86,7 @@ Or manually:
 - Create a PostgreSQL database
 - Create a Web Service with Python runtime
 - Set `DATABASE_URL` environment variable
-- Build command: `pip install -r requirements.txt`
+- Build command: `pip install uv && uv pip install --system -r requirements.txt`
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 
 ## Tech Stack

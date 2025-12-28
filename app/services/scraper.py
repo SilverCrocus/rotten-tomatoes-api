@@ -150,56 +150,70 @@ def _parse_html(soup: BeautifulSoup, rt_slug: str) -> Optional[RTMovieData]:
 
 def _enrich_with_html(soup: BeautifulSoup, data: RTMovieData) -> RTMovieData:
     """Enrich RTMovieData with additional data from HTML."""
+    html = str(soup)
+
     try:
-        # Find score-board or media-scorecard element
-        score_board = soup.find("media-scorecard")
-        if not score_board:
-            score_board = soup.find("score-board")
+        # Primary method: Extract from embedded JSON in HTML
+        # RT embeds score data as JSON objects in script tags
 
-        if score_board:
-            # Critic score (Tomatometer)
-            critic_score = score_board.get("tomatometerscore")
-            if critic_score:
-                data.critic_score = _safe_int(critic_score)
+        # Extract critic score from embedded JSON
+        critic_json = re.search(r'"criticsScore":\s*({[^}]+})', html)
+        if critic_json:
+            try:
+                critic_data = json.loads(critic_json.group(1))
+                if not data.critic_score:
+                    data.critic_score = _safe_int(critic_data.get("score"))
+                # Get certified status
+                is_certified = critic_data.get("certified", False)
+                if is_certified and data.critic_score and data.critic_score >= 75:
+                    data.critic_rating = "certified_fresh"
+            except json.JSONDecodeError:
+                pass
 
-            # Audience score
-            audience_score = score_board.get("audiencescore")
-            if audience_score:
-                data.audience_score = _safe_int(audience_score)
+        # Extract audience score from embedded JSON
+        audience_json = re.search(r'"audienceScore":\s*({[^}]+})', html)
+        if audience_json:
+            try:
+                audience_data = json.loads(audience_json.group(1))
+                if not data.audience_score:
+                    data.audience_score = _safe_int(audience_data.get("score"))
+            except json.JSONDecodeError:
+                pass
 
-            # Critic rating (certified_fresh, fresh, rotten)
-            critic_state = score_board.get("tomatometerstate")
-            if critic_state:
-                data.critic_rating = critic_state.lower().replace("-", "_")
+        # Get year from dateCreated in JSON-LD if not already set
+        if not data.year:
+            date_match = re.search(r'"dateCreated":\s*"([^"]+)"', html)
+            if date_match:
+                data.year = _extract_year(date_match.group(1))
 
-            # Audience rating (upright, spilled)
-            audience_state = score_board.get("audiencestate")
-            if audience_state:
-                data.audience_rating = audience_state.lower()
+        # Determine critic rating from score if not found
+        if not data.critic_rating and data.critic_score is not None:
+            # Check for certified fresh via HTML element
+            cert_elem = soup.find("score-icon-critics", {"certified": "true"})
+            if cert_elem and data.critic_score >= 75:
+                data.critic_rating = "certified_fresh"
+            elif data.critic_score >= 60:
+                data.critic_rating = "fresh"
+            else:
+                data.critic_rating = "rotten"
 
-        # Alternative: look for rt-button or score elements
-        if not data.critic_score:
-            tomatometer = soup.find("rt-button", {"slot": "criticsScore"})
-            if tomatometer:
-                score_text = tomatometer.get_text(strip=True)
-                data.critic_score = _safe_int(score_text.replace("%", ""))
+        # Determine audience rating from score if not found
+        if not data.audience_rating and data.audience_score is not None:
+            data.audience_rating = "upright" if data.audience_score >= 60 else "spilled"
 
-        if not data.audience_score:
-            audience = soup.find("rt-button", {"slot": "audienceScore"})
-            if audience:
-                score_text = audience.get_text(strip=True)
-                data.audience_score = _safe_int(score_text.replace("%", ""))
-
-        # Get consensus
-        consensus_elem = soup.find("span", {"data-qa": "critics-consensus"})
-        if consensus_elem:
-            data.consensus = consensus_elem.get_text(strip=True)
-
-        # Alternative consensus location
+        # Get consensus - it's in a <p> tag after "Critics Consensus" text
         if not data.consensus:
-            consensus_elem = soup.find("p", {"data-qa": "critics-consensus"})
-            if consensus_elem:
-                data.consensus = consensus_elem.get_text(strip=True)
+            # Look for p tag following Critics Consensus
+            consensus_match = re.search(
+                r'Critics\s*Consensus\s*</rt-text>\s*<p>([^<]+(?:<em>[^<]*</em>[^<]*)*)</p>',
+                html,
+                re.IGNORECASE | re.DOTALL
+            )
+            if consensus_match:
+                # Clean up the consensus text (remove HTML tags)
+                consensus_text = consensus_match.group(1)
+                consensus_text = re.sub(r'<[^>]+>', '', consensus_text)
+                data.consensus = consensus_text.strip()
 
     except Exception as e:
         logger.debug(f"HTML enrichment failed: {e}")
