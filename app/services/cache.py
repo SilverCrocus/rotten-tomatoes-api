@@ -72,6 +72,48 @@ async def get_cached(imdb_id: str) -> Optional[CachedMovie]:
         return None
 
 
+async def get_cached_batch(imdb_ids: list[str]) -> dict[str, CachedMovie]:
+    """
+    Get cached RT data for multiple IMDB IDs in a single query.
+
+    Args:
+        imdb_ids: List of IMDB IDs to look up
+
+    Returns:
+        Dictionary mapping IMDB ID to CachedMovie (only includes found entries)
+    """
+    if not imdb_ids:
+        return {}
+
+    async with get_connection() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT imdb_id, rt_slug, title, year, critic_score, audience_score,
+                   critic_rating, audience_rating, consensus, rt_url, cached_at
+            FROM rt_cache
+            WHERE imdb_id = ANY($1)
+            """,
+            imdb_ids,
+        )
+
+        return {
+            row["imdb_id"]: CachedMovie(
+                imdb_id=row["imdb_id"],
+                rt_slug=row["rt_slug"],
+                title=row["title"],
+                year=row["year"],
+                critic_score=row["critic_score"],
+                audience_score=row["audience_score"],
+                critic_rating=row["critic_rating"],
+                audience_rating=row["audience_rating"],
+                consensus=row["consensus"],
+                rt_url=row["rt_url"],
+                cached_at=row["cached_at"],
+            )
+            for row in rows
+        }
+
+
 def is_cache_fresh(cached: CachedMovie) -> bool:
     """Check if cached data is still fresh."""
     settings = get_settings()

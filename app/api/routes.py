@@ -1,5 +1,8 @@
 import re
-from fastapi import APIRouter, HTTPException, Depends
+import asyncio
+import json
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import StreamingResponse
 import logging
 
 from app.models.schemas import (
@@ -9,10 +12,15 @@ from app.models.schemas import (
     APIKeyCreate,
     APIKeyResponse,
     APIKeyListResponse,
+    BatchRequest,
+    BatchMovieEvent,
+    BatchErrorEvent,
+    BatchDoneEvent,
 )
 from app.services import wikidata, scraper, cache, auth
 from app.api.dependencies import get_api_key, get_admin_api_key
 from app.services.auth import APIKey
+from app.services.cache import CachedMovie
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +145,170 @@ async def get_movie(imdb_id: str, api_key: APIKey = Depends(get_api_key)):
         audienceRating=cached.audience_rating,
         consensus=cached.consensus,
         cachedAt=cached.cached_at,
+    )
+
+
+# =============================================================================
+# Batch Endpoint (SSE streaming)
+# =============================================================================
+
+
+def _format_sse(event: str, data: dict) -> str:
+    """Format a Server-Sent Event."""
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _cached_to_event(cached: CachedMovie, status: str) -> BatchMovieEvent:
+    """Convert CachedMovie to BatchMovieEvent."""
+    return BatchMovieEvent(
+        imdbId=cached.imdb_id,
+        status=status,
+        rtUrl=cached.rt_url,
+        title=cached.title,
+        year=cached.year,
+        criticScore=cached.critic_score,
+        audienceScore=cached.audience_score,
+        criticRating=cached.critic_rating,
+        audienceRating=cached.audience_rating,
+        consensus=cached.consensus,
+        cachedAt=cached.cached_at,
+    )
+
+
+async def _fetch_single_movie(
+    imdb_id: str,
+    stale_cache: CachedMovie | None,
+) -> BatchMovieEvent | BatchErrorEvent:
+    """
+    Fetch a single movie that wasn't in fresh cache.
+    Returns either a movie event or an error event.
+    """
+    # Query Wikidata for RT slug
+    rt_slug = await wikidata.get_rt_slug(imdb_id)
+
+    if not rt_slug:
+        if stale_cache:
+            logger.warning(f"Wikidata miss, returning stale cache for {imdb_id}")
+            return _cached_to_event(stale_cache, "stale")
+        return BatchErrorEvent(
+            imdbId=imdb_id,
+            error="not_found",
+            message=f"Movie not found in Wikidata: {imdb_id}",
+        )
+
+    # Scrape RT page
+    rt_data = await scraper.scrape_movie(rt_slug)
+
+    if not rt_data:
+        if stale_cache:
+            logger.warning(f"Scrape failed, returning stale cache for {imdb_id}")
+            return _cached_to_event(stale_cache, "stale")
+        return BatchErrorEvent(
+            imdbId=imdb_id,
+            error="scrape_failed",
+            message=f"Failed to scrape Rotten Tomatoes for {imdb_id}",
+        )
+
+    # Cache and return
+    cached = await cache.upsert_cache(imdb_id, rt_data)
+    logger.info(f"Fetched and cached RT data for {imdb_id}")
+    return _cached_to_event(cached, "fetched")
+
+
+@router.post(
+    "/movies/batch",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
+    tags=["Batch"],
+)
+async def get_movies_batch(
+    request: Request,
+    batch_request: BatchRequest,
+    api_key: APIKey = Depends(get_api_key),
+):
+    """
+    Get Rotten Tomatoes data for multiple movies by IMDB IDs.
+    Returns a Server-Sent Events stream with results as they become available.
+
+    - **imdbIds**: List of IMDB IDs (max 50)
+
+    Events:
+    - `movie`: Successfully resolved movie data
+    - `error`: Failed to resolve a specific movie
+    - `done`: Stream complete with summary stats
+    """
+    imdb_ids = batch_request.imdb_ids
+    logger.info(f"Batch request for {len(imdb_ids)} movies")
+
+    async def generate_events():
+        stats = {"cached": 0, "fetched": 0, "errors": 0}
+
+        # 1. Batch cache lookup
+        cached_movies = await cache.get_cached_batch(imdb_ids)
+
+        # 2. Separate fresh cache hits from misses/stale
+        fresh_cached = {}
+        to_fetch = []  # (imdb_id, stale_cache_or_none)
+
+        for imdb_id in imdb_ids:
+            cached = cached_movies.get(imdb_id)
+            if cached and cache.is_cache_fresh(cached):
+                fresh_cached[imdb_id] = cached
+            else:
+                to_fetch.append((imdb_id, cached))  # cached might be stale or None
+
+        # 3. Stream fresh cached results immediately
+        for imdb_id, cached in fresh_cached.items():
+            event = _cached_to_event(cached, "cached")
+            stats["cached"] += 1
+            yield _format_sse("movie", event.model_dump(by_alias=True))
+
+        # 4. Fetch cache misses in parallel
+        if to_fetch:
+            tasks = [
+                _fetch_single_movie(imdb_id, stale_cache)
+                for imdb_id, stale_cache in to_fetch
+            ]
+
+            # Process results as they complete
+            for coro in asyncio.as_completed(tasks):
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.info("Client disconnected, stopping batch processing")
+                    break
+
+                result = await coro
+
+                if isinstance(result, BatchMovieEvent):
+                    if result.status == "fetched":
+                        stats["fetched"] += 1
+                    else:  # stale
+                        stats["cached"] += 1  # Count stale as cached for stats
+                    yield _format_sse("movie", result.model_dump(by_alias=True))
+                else:  # BatchErrorEvent
+                    stats["errors"] += 1
+                    yield _format_sse("error", result.model_dump(by_alias=True))
+
+        # 5. Send done event
+        done_event = BatchDoneEvent(
+            total=len(imdb_ids),
+            cached=stats["cached"],
+            fetched=stats["fetched"],
+            errors=stats["errors"],
+        )
+        yield _format_sse("done", done_event.model_dump())
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
     )
 
 

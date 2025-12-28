@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 RT_BASE_URL = "https://www.rottentomatoes.com"
 
-# Rate limiting semaphore
-_rt_semaphore = asyncio.Semaphore(1)
+# Rate limiting semaphore - allow 2 concurrent RT requests
+_rt_semaphore = asyncio.Semaphore(2)
 
 
 async def scrape_movie(rt_slug: str) -> Optional[RTMovieData]:

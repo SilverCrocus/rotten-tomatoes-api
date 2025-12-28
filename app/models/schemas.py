@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 
 
 class RTMovieResponse(BaseModel):
@@ -80,3 +80,77 @@ class APIKeyListResponse(BaseModel):
     """Response model for listing API keys."""
 
     keys: list[APIKeyResponse]
+
+
+# =============================================================================
+# Batch Endpoint Schemas
+# =============================================================================
+
+
+class BatchRequest(BaseModel):
+    """Request model for batch movie lookup."""
+
+    imdb_ids: list[str] = Field(
+        ...,
+        alias="imdbIds",
+        min_length=1,
+        max_length=50,
+        description="List of IMDB IDs to look up (max 50)",
+    )
+
+    @field_validator("imdb_ids")
+    @classmethod
+    def validate_imdb_ids(cls, v: list[str]) -> list[str]:
+        import re
+        pattern = re.compile(r"^tt\d{7,8}$")
+        invalid = [id for id in v if not pattern.match(id.lower())]
+        if invalid:
+            raise ValueError(f"Invalid IMDB ID format: {invalid}")
+        return [id.lower() for id in v]
+
+    class Config:
+        populate_by_name = True
+
+
+class BatchMovieEvent(BaseModel):
+    """SSE event for a successfully resolved movie."""
+
+    imdb_id: str = Field(..., alias="imdbId")
+    status: Literal["cached", "stale", "fetched"] = Field(
+        ..., description="How the data was obtained"
+    )
+    rt_url: str = Field(..., alias="rtUrl")
+    title: str
+    year: Optional[int] = None
+    critic_score: Optional[int] = Field(None, alias="criticScore")
+    audience_score: Optional[int] = Field(None, alias="audienceScore")
+    critic_rating: Optional[str] = Field(None, alias="criticRating")
+    audience_rating: Optional[str] = Field(None, alias="audienceRating")
+    consensus: Optional[str] = None
+    cached_at: datetime = Field(..., alias="cachedAt")
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class BatchErrorEvent(BaseModel):
+    """SSE event for a failed movie lookup."""
+
+    imdb_id: str = Field(..., alias="imdbId")
+    error: Literal["not_found", "scrape_failed", "invalid_id"] = Field(
+        ..., description="Error type"
+    )
+    message: str = Field(..., description="Human-readable error message")
+
+    class Config:
+        populate_by_name = True
+
+
+class BatchDoneEvent(BaseModel):
+    """SSE event signaling batch completion."""
+
+    total: int = Field(..., description="Total IDs requested")
+    cached: int = Field(..., description="Count returned from cache")
+    fetched: int = Field(..., description="Count freshly fetched")
+    errors: int = Field(..., description="Count of failures")
