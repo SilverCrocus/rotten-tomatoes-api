@@ -125,23 +125,32 @@ async def scrape_editorial_list(url: str) -> Optional[ListResult]:
 
             # Try to get title from link text or nearby elements
             movie_title = link.get_text(strip=True)
+
+            # Skip common non-title texts
+            if movie_title in ["[More]", "More", ""]:
+                movie_title = ""
+
             if not movie_title or len(movie_title) < 2:
                 # Try parent element
                 parent = link.find_parent("div")
                 if parent:
-                    title_elem = parent.find(["h2", "h3", "strong"])
-                    if title_elem:
+                    title_elem = parent.find(["h2", "h3", "strong", "a"])
+                    if title_elem and title_elem != link:
                         movie_title = title_elem.get_text(strip=True)
 
             # Try to extract year
             year = None
-            year_match = re.search(r"\((\d{4})\)", movie_title)
-            if year_match:
-                year = int(year_match.group(1))
-                movie_title = re.sub(r"\s*\(\d{4}\)\s*", "", movie_title).strip()
-
             if movie_title:
-                movies.append(ListMovie(rt_slug=f"m/{slug}", title=movie_title, year=year))
+                year_match = re.search(r"\((\d{4})\)", movie_title)
+                if year_match:
+                    year = int(year_match.group(1))
+                    movie_title = re.sub(r"\s*\(\d{4}\)\s*", "", movie_title).strip()
+
+            # Use slug as fallback title
+            if not movie_title or len(movie_title) < 2:
+                movie_title = slug.replace("_", " ").title()
+
+            movies.append(ListMovie(rt_slug=f"m/{slug}", title=movie_title, year=year))
 
         if not movies:
             logger.warning(f"No movies found in editorial list: {url}")
