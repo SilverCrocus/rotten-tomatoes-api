@@ -1,6 +1,7 @@
 import re
 import asyncio
 import json
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 import logging
@@ -16,8 +17,17 @@ from app.models.schemas import (
     BatchMovieEvent,
     BatchErrorEvent,
     BatchDoneEvent,
+    # List schemas
+    ListResponse,
+    ListMovie,
+    CuratedListInfo,
+    CuratedListsResponse,
+    BrowseOptionsResponse,
 )
 from app.services import wikidata, scraper, cache, auth
+from app.services import list_scraper, list_cache
+from app.services.curated_lists import get_curated_list, get_all_curated_lists
+from app.services.browse_options import get_browse_options, validate_browse_params, build_browse_url
 from app.api.dependencies import get_api_key, get_admin_api_key
 from app.services.auth import APIKey
 from app.services.cache import CachedMovie
@@ -309,6 +319,312 @@ async def get_movies_batch(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
+    )
+
+
+# =============================================================================
+# List Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/list",
+    response_model=ListResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid or unsupported URL"},
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        502: {"model": ErrorResponse, "description": "Failed to fetch RT list"},
+    },
+    tags=["Lists"],
+)
+async def get_list_by_url(url: str, api_key: APIKey = Depends(get_api_key)):
+    """
+    Fetch movies from an RT list by URL.
+
+    Supports:
+    - Editorial lists: https://editorial.rottentomatoes.com/guide/best-horror-movies/
+    - Browse pages: https://www.rottentomatoes.com/browse/movies_at_home/critics:certified_fresh
+    """
+    # Validate URL type
+    url_type = list_scraper.detect_url_type(url)
+    if url_type == "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported RT URL format. Must be /editorial/*, /guide/*, or /browse/* URL",
+        )
+
+    # Check cache first
+    cached = await list_cache.get_cached_list(url)
+    if cached and list_cache.is_list_cache_fresh(cached):
+        logger.info(f"List cache hit for {url}")
+        return ListResponse(
+            source=cached.source_url,
+            title=cached.title,
+            movieCount=len(cached.movies),
+            movies=[ListMovie(**m) for m in cached.movies],
+            cachedAt=cached.cached_at,
+            stale=False,
+        )
+
+    # Scrape the list
+    logger.info(f"List cache miss for {url}, scraping")
+    result = await list_scraper.scrape_list(url)
+
+    if not result:
+        # Return stale cache if available
+        if cached:
+            logger.warning(f"Scrape failed, returning stale cache for {url}")
+            return ListResponse(
+                source=cached.source_url,
+                title=cached.title,
+                movieCount=len(cached.movies),
+                movies=[ListMovie(**m) for m in cached.movies],
+                cachedAt=cached.cached_at,
+                stale=True,
+            )
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch RT list from {url}",
+        )
+
+    # Cache and return
+    cached = await list_cache.upsert_list_cache(result)
+    logger.info(f"Cached list from {url} with {len(cached.movies)} movies")
+
+    return ListResponse(
+        source=cached.source_url,
+        title=cached.title,
+        movieCount=len(cached.movies),
+        movies=[ListMovie(**m) for m in cached.movies],
+        cachedAt=cached.cached_at,
+        stale=False,
+    )
+
+
+@router.get(
+    "/lists/curated",
+    response_model=CuratedListsResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
+    tags=["Lists"],
+)
+async def list_curated_lists(api_key: APIKey = Depends(get_api_key)):
+    """
+    List all available curated editorial lists.
+    """
+    lists = get_all_curated_lists()
+    return CuratedListsResponse(
+        lists=[CuratedListInfo(**lst) for lst in lists]
+    )
+
+
+@router.get(
+    "/lists/curated/{slug}",
+    response_model=ListResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        404: {"model": ErrorResponse, "description": "Unknown list slug"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        502: {"model": ErrorResponse, "description": "Failed to fetch RT list"},
+    },
+    tags=["Lists"],
+)
+async def get_curated_list_by_slug(slug: str, api_key: APIKey = Depends(get_api_key)):
+    """
+    Fetch movies from a curated editorial list by slug.
+
+    Use GET /lists/curated to see available lists.
+    """
+    list_info = get_curated_list(slug)
+    if not list_info:
+        available = [lst["slug"] for lst in get_all_curated_lists()]
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown list: {slug}. Available: {available}",
+        )
+
+    url = list_info["url"]
+
+    # Check cache first
+    cached = await list_cache.get_cached_list(url)
+    if cached and list_cache.is_list_cache_fresh(cached):
+        logger.info(f"Curated list cache hit for {slug}")
+        return ListResponse(
+            source=cached.source_url,
+            title=cached.title,
+            movieCount=len(cached.movies),
+            movies=[ListMovie(**m) for m in cached.movies],
+            cachedAt=cached.cached_at,
+            stale=False,
+        )
+
+    # Scrape the list
+    logger.info(f"Curated list cache miss for {slug}, scraping")
+    result = await list_scraper.scrape_editorial_list(url)
+
+    if not result:
+        if cached:
+            logger.warning(f"Scrape failed, returning stale cache for {slug}")
+            return ListResponse(
+                source=cached.source_url,
+                title=cached.title,
+                movieCount=len(cached.movies),
+                movies=[ListMovie(**m) for m in cached.movies],
+                cachedAt=cached.cached_at,
+                stale=True,
+            )
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch RT list: {slug}",
+        )
+
+    # Cache and return
+    cached = await list_cache.upsert_list_cache(result)
+    logger.info(f"Cached curated list {slug} with {len(cached.movies)} movies")
+
+    return ListResponse(
+        source=cached.source_url,
+        title=cached.title,
+        movieCount=len(cached.movies),
+        movies=[ListMovie(**m) for m in cached.movies],
+        cachedAt=cached.cached_at,
+        stale=False,
+    )
+
+
+@router.get(
+    "/lists/browse/options",
+    response_model=BrowseOptionsResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
+    tags=["Lists"],
+)
+async def get_browse_filter_options(api_key: APIKey = Depends(get_api_key)):
+    """
+    Get available browse filter options.
+
+    Use these values with GET /lists/browse to query RT.
+    """
+    options = get_browse_options()
+    return BrowseOptionsResponse(
+        certifications=options["certifications"],
+        genres=options["genres"],
+        affiliates=options["affiliates"],
+        sorts=options["sorts"],
+        types=options["types"],
+        audienceRatings=options["audience_ratings"],
+    )
+
+
+@router.get(
+    "/lists/browse",
+    response_model=ListResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid filter parameter"},
+        401: {"model": ErrorResponse, "description": "Invalid API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        502: {"model": ErrorResponse, "description": "Failed to fetch RT browse results"},
+    },
+    tags=["Lists"],
+)
+async def browse_movies(
+    api_key: APIKey = Depends(get_api_key),
+    certification: Optional[str] = None,
+    genre: Optional[str] = None,
+    affiliate: Optional[str] = None,
+    sort: Optional[str] = None,
+    type: str = "movies_at_home",
+    audience: Optional[str] = None,
+):
+    """
+    Browse RT movies with filters.
+
+    Use GET /lists/browse/options to see valid filter values.
+
+    Examples:
+    - /lists/browse?certification=certified_fresh&genre=horror
+    - /lists/browse?affiliate=netflix&sort=popular
+    """
+    # Validate parameters
+    is_valid, error = validate_browse_params(
+        certification=certification,
+        genre=genre,
+        affiliate=affiliate,
+        sort=sort,
+        browse_type=type,
+        audience=audience,
+    )
+
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error)
+
+    # Build URL
+    url = build_browse_url(
+        certification=certification,
+        genre=genre,
+        affiliate=affiliate,
+        sort=sort,
+        browse_type=type,
+        audience=audience,
+    )
+
+    # Check cache first
+    cached = await list_cache.get_cached_list(url)
+    if cached and list_cache.is_list_cache_fresh(cached):
+        logger.info(f"Browse cache hit for {url}")
+        return ListResponse(
+            source=cached.source_url,
+            title=cached.title,
+            movieCount=len(cached.movies),
+            movies=[ListMovie(**m) for m in cached.movies],
+            cachedAt=cached.cached_at,
+            stale=False,
+        )
+
+    # Scrape browse page
+    logger.info(f"Browse cache miss, scraping {url}")
+    result = await list_scraper.scrape_browse_page(url)
+
+    if not result:
+        if cached:
+            logger.warning(f"Browse scrape failed, returning stale cache")
+            return ListResponse(
+                source=cached.source_url,
+                title=cached.title,
+                movieCount=len(cached.movies),
+                movies=[ListMovie(**m) for m in cached.movies],
+                cachedAt=cached.cached_at,
+                stale=True,
+            )
+
+        # Empty results are valid for browse
+        return ListResponse(
+            source=url,
+            title="Browse Results",
+            movieCount=0,
+            movies=[],
+            cachedAt=None,
+            stale=False,
+        )
+
+    # Cache and return
+    cached = await list_cache.upsert_list_cache(result)
+    logger.info(f"Cached browse results with {len(cached.movies)} movies")
+
+    return ListResponse(
+        source=cached.source_url,
+        title=cached.title,
+        movieCount=len(cached.movies),
+        movies=[ListMovie(**m) for m in cached.movies],
+        cachedAt=cached.cached_at,
+        stale=False,
     )
 
 
