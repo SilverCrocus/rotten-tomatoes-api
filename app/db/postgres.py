@@ -63,6 +63,28 @@ async def init_db() -> None:
             ON api_keys(key)
         """)
 
+        # List cache table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS list_cache (
+                id SERIAL PRIMARY KEY,
+                url_hash VARCHAR(64) UNIQUE NOT NULL,
+                source_url TEXT NOT NULL,
+                title VARCHAR(500),
+                movies JSONB NOT NULL DEFAULT '[]',
+                cached_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_list_cache_url_hash
+            ON list_cache(url_hash)
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_list_cache_cached_at
+            ON list_cache(cached_at)
+        """)
+
 
 async def close_db() -> None:
     """Close the database connection pool."""
