@@ -109,6 +109,7 @@ async def scrape_editorial_list(url: str) -> Optional[ListResult]:
 
         # Method 1: Look for links with /m/ pattern
         movie_links = soup.find_all("a", href=re.compile(r"/m/[^/\"]+"))
+        logger.info(f"Found {len(movie_links)} movie links on editorial page")
         seen_slugs = set()
 
         for link in movie_links:

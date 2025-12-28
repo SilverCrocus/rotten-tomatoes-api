@@ -127,6 +127,6 @@ def build_browse_url(
         filters.append(f"sort:{sort}")
 
     if filters:
-        return f"{base}/{'/'.join(filters)}"
+        return f"{base}/{'~'.join(filters)}"
 
     return base
