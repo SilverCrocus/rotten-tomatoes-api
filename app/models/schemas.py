@@ -154,3 +154,61 @@ class BatchDoneEvent(BaseModel):
     cached: int = Field(..., description="Count returned from cache")
     fetched: int = Field(..., description="Count freshly fetched")
     errors: int = Field(..., description="Count of failures")
+
+
+# =============================================================================
+# List Endpoint Schemas
+# =============================================================================
+
+
+class ListMovie(BaseModel):
+    """A movie entry in a list."""
+
+    rt_slug: str = Field(..., alias="rtSlug")
+    title: str
+    year: Optional[int] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class ListResponse(BaseModel):
+    """Response model for list endpoints."""
+
+    source: str = Field(..., description="Source RT URL")
+    title: str = Field(..., description="List title")
+    movie_count: int = Field(..., alias="movieCount")
+    movies: list[ListMovie]
+    cached_at: Optional[datetime] = Field(None, alias="cachedAt")
+    stale: bool = Field(False, description="True if cache is expired")
+
+    class Config:
+        populate_by_name = True
+
+
+class CuratedListInfo(BaseModel):
+    """Info about an available curated list."""
+
+    slug: str
+    title: str
+    description: Optional[str] = None
+
+
+class CuratedListsResponse(BaseModel):
+    """Response for listing available curated lists."""
+
+    lists: list[CuratedListInfo]
+
+
+class BrowseOptionsResponse(BaseModel):
+    """Response for available browse filter options."""
+
+    certifications: list[str]
+    genres: list[str]
+    affiliates: list[str]
+    sorts: list[str]
+    types: list[str]
+    audience_ratings: list[str] = Field(..., alias="audienceRatings")
+
+    class Config:
+        populate_by_name = True
