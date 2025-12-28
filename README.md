@@ -7,6 +7,7 @@ A REST API for fetching Rotten Tomatoes movie data using IMDB IDs. Get critic sc
 ## Features
 
 - **IMDB ID Lookup** - Use familiar IMDB IDs (e.g., `tt0468569`) to fetch RT data
+- **Batch Requests** - Fetch up to 50 movies in a single request with SSE streaming
 - **Automatic Mapping** - Uses Wikidata to map IMDB IDs to RT slugs
 - **Comprehensive Data** - Returns critic score, audience score, ratings, consensus, and RT URL
 - **Smart Caching** - PostgreSQL caching with 7-day TTL for fast responses
@@ -124,6 +125,70 @@ curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/movie/tt011116
 | 404 | Movie not found in Wikidata |
 | 429 | Rate limit exceeded |
 | 502 | Failed to fetch RT data |
+
+---
+
+### POST /movies/batch
+
+Fetch Rotten Tomatoes data for multiple movies in a single request. Returns a **Server-Sent Events (SSE)** stream with results as they become available - cached movies return instantly while cache misses are fetched in parallel.
+
+**Request Body:**
+
+```json
+{
+  "imdbIds": ["tt0468569", "tt0111161", "tt0137523"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `imdbIds` | array | Yes | List of IMDB IDs (max 50) |
+
+**Example Request:**
+
+```bash
+curl -X POST "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/movies/batch" \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"imdbIds": ["tt0468569", "tt0111161", "tt0137523"]}'
+```
+
+**Response (SSE Stream):**
+
+The response is a Server-Sent Events stream with three event types:
+
+**`movie` event** - Successfully resolved movie:
+```
+event: movie
+data: {"imdbId": "tt0468569", "status": "cached", "rtUrl": "https://www.rottentomatoes.com/m/the_dark_knight", "title": "The Dark Knight", "year": 2008, "criticScore": 94, "audienceScore": 94, "criticRating": "certified_fresh", "audienceRating": "upright", "consensus": "Dark, complex, and unforgettable...", "cachedAt": "2025-12-28T05:09:07Z"}
+```
+
+**`error` event** - Failed to resolve a movie:
+```
+event: error
+data: {"imdbId": "tt9999999", "error": "not_found", "message": "Movie not found in Wikidata: tt9999999"}
+```
+
+**`done` event** - Stream complete with summary:
+```
+event: done
+data: {"total": 3, "cached": 2, "fetched": 1, "errors": 0}
+```
+
+**Movie Event Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | `cached` (from fresh cache), `stale` (from expired cache), or `fetched` (freshly scraped) |
+| *(other fields)* | - | Same as single movie endpoint |
+
+**Error Types:**
+
+| Error | Description |
+|-------|-------------|
+| `not_found` | Movie not found in Wikidata |
+| `scrape_failed` | Failed to scrape Rotten Tomatoes |
+| `invalid_id` | Invalid IMDB ID format |
 
 ---
 
@@ -316,6 +381,39 @@ movie = get_rt_data("tt0468569")
 print(f"{movie['title']}: {movie['criticScore']}% Tomatometer")
 ```
 
+**Batch Request (Python):**
+
+```python
+import requests
+import json
+
+def get_rt_data_batch(imdb_ids: list[str]) -> dict:
+    """Fetch multiple movies via SSE stream."""
+    results = {}
+
+    response = requests.post(
+        f"{BASE_URL}/movies/batch",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"imdbIds": imdb_ids},
+        stream=True
+    )
+
+    for line in response.iter_lines():
+        if line:
+            line = line.decode('utf-8')
+            if line.startswith('data: '):
+                data = json.loads(line[6:])
+                if 'imdbId' in data:
+                    results[data['imdbId']] = data
+
+    return results
+
+# Example usage
+movies = get_rt_data_batch(["tt0468569", "tt0111161", "tt0137523"])
+for imdb_id, movie in movies.items():
+    print(f"{movie['title']}: {movie.get('criticScore', 'N/A')}%")
+```
+
 ### JavaScript/TypeScript
 
 ```javascript
@@ -339,12 +437,65 @@ const movie = await getRTData('tt0468569');
 console.log(`${movie.title}: ${movie.criticScore}% Tomatometer`);
 ```
 
+**Batch Request (JavaScript/TypeScript):**
+
+```typescript
+async function getRTDataBatch(imdbIds: string[]): Promise<Map<string, any>> {
+  const results = new Map();
+
+  const response = await fetch(`${BASE_URL}/movies/batch`, {
+    method: 'POST',
+    headers: {
+      'X-API-Key': API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ imdbIds }),
+  });
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = JSON.parse(line.slice(6));
+        if (data.imdbId) {
+          results.set(data.imdbId, data);
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+// Example usage
+const movies = await getRTDataBatch(['tt0468569', 'tt0111161', 'tt0137523']);
+movies.forEach((movie, imdbId) => {
+  console.log(`${movie.title}: ${movie.criticScore}% Tomatometer`);
+});
+```
+
 ### cURL
 
 ```bash
-# Get movie data
+# Get single movie
 curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/movie/tt0468569" \
   -H "X-API-Key: your-api-key-here"
+
+# Get multiple movies (batch)
+curl -X POST "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/movies/batch" \
+  -H "X-API-Key: your-api-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"imdbIds": ["tt0468569", "tt0111161", "tt0137523"]}'
 
 # Create a new API key (admin only)
 curl -X POST "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/admin/keys" \
