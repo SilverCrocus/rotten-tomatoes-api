@@ -8,6 +8,7 @@ A REST API for fetching Rotten Tomatoes movie data using IMDB IDs. Get critic sc
 
 - **IMDB ID Lookup** - Use familiar IMDB IDs (e.g., `tt0468569`) to fetch RT data
 - **Batch Requests** - Fetch up to 50 movies in a single request with SSE streaming
+- **RT Lists** - Fetch movies from RT editorial lists and browse pages
 - **Automatic Mapping** - Uses Wikidata to map IMDB IDs to RT slugs
 - **Comprehensive Data** - Returns critic score, audience score, ratings, consensus, and RT URL
 - **Smart Caching** - PostgreSQL caching with 7-day TTL for fast responses
@@ -189,6 +190,137 @@ data: {"total": 3, "cached": 2, "fetched": 1, "errors": 0}
 | `not_found` | Movie not found in Wikidata |
 | `scrape_failed` | Failed to scrape Rotten Tomatoes |
 | `invalid_id` | Invalid IMDB ID format |
+
+---
+
+## List Endpoints
+
+Fetch movies from Rotten Tomatoes editorial lists and browse pages.
+
+### GET /list
+
+Fetch movies from any RT list by URL.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | query | Yes | RT list URL (editorial or browse page) |
+
+**Example Request:**
+
+```bash
+curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/list?url=https://editorial.rottentomatoes.com/guide/best-horror-movies-of-all-time/" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+**Response (200):**
+
+```json
+{
+  "source": "https://editorial.rottentomatoes.com/guide/best-horror-movies-of-all-time/",
+  "title": "Best Horror Movies of All Time",
+  "movieCount": 200,
+  "movies": [
+    {"rtSlug": "m/the_exorcist", "title": "The Exorcist", "year": 1973},
+    {"rtSlug": "m/get_out", "title": "Get Out", "year": 2017}
+  ],
+  "cachedAt": "2025-12-29T12:00:00Z",
+  "stale": false
+}
+```
+
+---
+
+### GET /lists/curated
+
+List all available curated editorial lists.
+
+**Example Request:**
+
+```bash
+curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/lists/curated" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+**Response (200):**
+
+```json
+{
+  "lists": [
+    {"slug": "best-horror", "title": "Best Horror Movies of All Time", "description": "RT's definitive ranking of the greatest horror films"},
+    {"slug": "best-2024", "title": "Best Movies of 2024", "description": "The top-rated films of 2024"},
+    {"slug": "best-comedies", "title": "Best Comedies of All Time", "description": "The funniest movies ever made according to critics"}
+  ]
+}
+```
+
+---
+
+### GET /lists/curated/{slug}
+
+Fetch movies from a curated list by slug.
+
+**Example Request:**
+
+```bash
+curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/lists/curated/best-horror" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+**Response:** Same format as GET /list
+
+---
+
+### GET /lists/browse/options
+
+Get available browse filter options.
+
+**Example Request:**
+
+```bash
+curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/lists/browse/options" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+**Response (200):**
+
+```json
+{
+  "certifications": ["certified_fresh", "fresh", "rotten"],
+  "genres": ["action", "comedy", "horror", "drama", "sci_fi", ...],
+  "affiliates": ["netflix", "amazon_prime", "hulu", "max", ...],
+  "sorts": ["popular", "newest", "a_z", "critic_highest", "audience_highest"],
+  "types": ["movies_at_home", "movies_in_theaters", "movies_coming_soon"],
+  "audienceRatings": ["upright", "spilled"]
+}
+```
+
+---
+
+### GET /lists/browse
+
+Browse RT movies with filters.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `certification` | query | No | `certified_fresh`, `fresh`, or `rotten` |
+| `genre` | query | No | Genre filter (see /lists/browse/options) |
+| `affiliate` | query | No | Streaming service filter |
+| `sort` | query | No | Sort order |
+| `type` | query | No | `movies_at_home` (default), `movies_in_theaters`, `movies_coming_soon` |
+| `audience` | query | No | `upright` or `spilled` |
+
+**Example Request:**
+
+```bash
+curl -X GET "https://rotten-tomatoes-api-clrb.onrender.com/api/v1/lists/browse?certification=certified_fresh&genre=horror&sort=popular" \
+  -H "X-API-Key: your-api-key-here"
+```
+
+**Response:** Same format as GET /list
 
 ---
 
