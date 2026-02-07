@@ -1,3 +1,5 @@
+import ssl
+
 import asyncpg
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -6,6 +8,16 @@ from app.config import get_settings
 
 # Global connection pool
 _pool: Optional[asyncpg.Pool] = None
+
+
+def _build_ssl_context(database_url: str) -> ssl.SSLContext | None:
+    """Build SSL context for Supabase/external Postgres connections."""
+    if "localhost" in database_url or "127.0.0.1" in database_url:
+        return None
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 async def init_db() -> None:
@@ -17,6 +29,7 @@ async def init_db() -> None:
         settings.database_url,
         min_size=2,
         max_size=10,
+        ssl=_build_ssl_context(settings.database_url),
     )
 
     # Create tables if they don't exist

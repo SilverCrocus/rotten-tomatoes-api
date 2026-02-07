@@ -1,14 +1,14 @@
 # Deployment Guide
 
-This guide covers deploying the Rotten Tomatoes API to Render. You can also adapt these instructions for other platforms.
+This guide covers deploying the Rotten Tomatoes API using **Render** (web service) and **Supabase** (PostgreSQL database).
 
 ---
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Quick Deploy (Render Blueprint)](#quick-deploy-render-blueprint)
-3. [Manual Deploy (Step by Step)](#manual-deploy-step-by-step)
+2. [Database Setup (Supabase)](#database-setup-supabase)
+3. [Web Service Setup (Render)](#web-service-setup-render)
 4. [Environment Variables](#environment-variables)
 5. [Post-Deployment Setup](#post-deployment-setup)
 6. [Local Development](#local-development)
@@ -20,70 +20,51 @@ This guide covers deploying the Rotten Tomatoes API to Render. You can also adap
 
 Before deploying, ensure you have:
 
+- A [Supabase](https://supabase.com) account (free tier)
 - A [Render](https://render.com) account
 - A [GitHub](https://github.com) account
 - The repository forked/cloned to your GitHub
 
 ---
 
-## Quick Deploy (Render Blueprint)
+## Database Setup (Supabase)
 
-The easiest way to deploy is using Render's Blueprint feature with the included `render.yaml`.
+The database is hosted on Supabase's free tier PostgreSQL. Tables are created automatically when the API starts.
 
-### Step 1: Fork the Repository
+> **Note:** The RT API tables (`rt_cache`, `api_keys`, `list_cache`) live in the **gitrpg** Supabase project alongside the GitRPG tables. They use distinct names and do not conflict.
 
-1. Go to https://github.com/SilverCrocus/rotten-tomatoes-api
-2. Click **Fork** to create your own copy
+### Step 1: Get the Connection String
 
-### Step 2: Deploy to Render
-
-1. Go to https://dashboard.render.com
-2. Click **New** → **Blueprint**
-3. Connect your GitHub account if not already connected
-4. Select your forked repository
-5. Click **Apply**
-
-### Step 3: Configure Secrets
-
-After the Blueprint creates your services:
-
-1. Go to your **Web Service** → **Environment**
-2. Find `ADMIN_API_KEY` (it will be empty)
-3. Generate a secure key:
-   ```bash
-   python -c "import secrets; print(secrets.token_hex(32))"
+1. Go to https://supabase.com/dashboard
+2. Select your project (e.g. **gitrpg**)
+3. Go to **Project Settings** → **Database**
+4. Under **Connection string**, select **URI**
+5. Copy the connection string — it looks like:
    ```
-4. Paste the generated key and click **Save Changes**
+   postgresql://postgres.cjohlwagftjsihexyzzw:[YOUR-PASSWORD]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres
+   ```
+6. Replace `[YOUR-PASSWORD]` with your database password
 
-### Step 4: Verify Deployment
-
-Once deployed, test the health endpoint:
-
-```bash
-curl https://your-app-name.onrender.com/api/v1/health
-```
+> **Important:** Use the **Session Pooler** method (not Direct connection). Direct connection is not IPv4 compatible and won't work from Render.
 
 ---
 
-## Manual Deploy (Step by Step)
+## Web Service Setup (Render)
 
-If you prefer manual setup or need more control:
-
-### Step 1: Create PostgreSQL Database
+### Option A: Blueprint Deploy
 
 1. Go to https://dashboard.render.com
-2. Click **New** → **PostgreSQL**
-3. Configure:
-   - **Name:** `rotten-tomatoes-api-db`
-   - **Database:** `rt_api`
-   - **User:** `rt_api_user`
-   - **Region:** Oregon (or closest to you)
-   - **Plan:** Starter ($7/month) or Free (limited)
-4. Click **Create Database**
-5. Wait for status to show **Available**
-6. Copy the **Internal Database URL** (you'll need this later)
+2. Click **New** → **Blueprint**
+3. Connect your GitHub repository
+4. Click **Apply**
+5. After creation, go to **Web Service** → **Environment**
+6. Set `DATABASE_URL` to your Supabase connection string (from above)
+7. Set `ADMIN_API_KEY` to a secure key:
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
 
-### Step 2: Create Web Service
+### Option B: Manual Setup
 
 1. Click **New** → **Web Service**
 2. Connect your GitHub repository
@@ -92,30 +73,16 @@ If you prefer manual setup or need more control:
    | Setting | Value |
    |---------|-------|
    | **Name** | `rotten-tomatoes-api` |
-   | **Region** | Oregon (same as database) |
    | **Branch** | `main` |
    | **Runtime** | Python |
-   | **Build Command** | `pip install uv && uv pip install --system -r requirements.txt` |
-   | **Start Command** | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+   | **Build Command** | `pip install -r requirements.txt` |
+   | **Start Command** | `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
    | **Plan** | Starter ($7/month) |
 
-4. Click **Create Web Service**
+4. Add environment variables (see [Environment Variables](#environment-variables))
+5. Click **Create Web Service**
 
-### Step 3: Add Environment Variables
-
-Go to your Web Service → **Environment** and add:
-
-| Key | Value | Notes |
-|-----|-------|-------|
-| `DATABASE_URL` | `postgres://...` | Internal URL from Step 1 |
-| `ADMIN_API_KEY` | `your-secure-key` | Generate with: `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `CACHE_TTL_DAYS` | `7` | How long to cache data |
-| `LOG_LEVEL` | `INFO` | Logging verbosity |
-| `DEFAULT_RATE_LIMIT` | `500` | Requests per hour for users |
-
-Click **Save Changes** to trigger a redeploy.
-
-### Step 4: Verify Deployment
+### Verify Deployment
 
 ```bash
 # Check health
@@ -134,7 +101,7 @@ curl -X GET "https://your-app.onrender.com/api/v1/movie/tt0468569" \
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@host/db` |
+| `DATABASE_URL` | Supabase PostgreSQL connection string (Session Pooler) | `postgresql://postgres.[ref]:[pass]@aws-1-[region].pooler.supabase.com:5432/postgres` |
 | `ADMIN_API_KEY` | Master admin API key | 64-character hex string |
 
 ### Optional Variables
@@ -272,10 +239,11 @@ DATABASE_URL=postgresql://rt_api_user:rt_api_pass@localhost:5432/rt_api
 **Symptom:** `RuntimeError: Database not initialized`
 
 **Solutions:**
-1. Check `DATABASE_URL` is set correctly
-2. Ensure database is in same region as web service
-3. Use **Internal** database URL, not External
-4. Check database status is "Available"
+1. Check `DATABASE_URL` is set correctly in Render env vars
+2. Ensure the Supabase project is active (not paused)
+3. Verify the database password in the connection string is correct
+4. Check that SSL is working (the API auto-enables SSL for non-localhost connections)
+5. If using Supabase free tier, the project may have auto-paused after 1 week of inactivity — go to the Supabase dashboard and restore it
 
 ### 401 Unauthorized
 
@@ -328,18 +296,18 @@ render logs --service rotten-tomatoes-api
 
 ## Costs
 
-### Render Pricing (as of 2024)
+### Current Setup
 
-| Resource | Plan | Cost |
-|----------|------|------|
-| Web Service | Starter | $7/month |
-| PostgreSQL | Starter | $7/month |
-| **Total** | | **$14/month** |
+| Resource | Platform | Plan | Cost |
+|----------|----------|------|------|
+| Web Service | Render | Starter | $7/month |
+| PostgreSQL | Supabase | Free | $0/month |
+| **Total** | | | **$7/month** |
 
-Free tier is available but has limitations:
-- Services spin down after inactivity
-- Limited database storage
-- Slower cold starts
+**Supabase free tier limits:**
+- 500 MB database storage
+- Project auto-pauses after 1 week of inactivity (restore from dashboard)
+- 2 active projects max
 
 ---
 
