@@ -44,3 +44,6 @@ htmlcov/
 # Logs
 *.log
 .venv/
+
+# Claude Code
+CLAUDE.md
